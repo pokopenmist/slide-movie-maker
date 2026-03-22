@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slide Movie Maker</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Import Map for React & Lucide -->
+    <script type="importmap">
+        {
+            "imports": {
+                "react": "https://esm.sh/react@18.2.0",
+                "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+                "lucide-react": "https://esm.sh/lucide-react@0.294.0"
+            }
+        }
+    </script>
+    <!-- Babel for JSX/TSX transformation in browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #c7c7c7;
+            border-radius: 3px;
+        }
+        .bg-grid-pattern {
+            background-image: radial-gradient(#333 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+        @keyframes fade-in {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+            animation: fade-in 0.3s ease-out forwards;
+        }
+        .btn-primary {
+            background-color: #4f46e5;
+            color: white;
+            font-weight: 600;
+            border-radius: 0.5rem;
+            transition: all 0.2s;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        .btn-primary:hover {
+            background-color: #4338ca;
+        }
+        .btn-primary:active {
+            transform: scale(0.95);
+        }
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-secondary {
+            background-color: white;
+            color: #374151;
+            border: 1px solid #d1d5db;
+            font-weight: 600;
+            border-radius: 0.5rem;
+            transition: all 0.2s;
+            box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        }
+        .btn-secondary:hover {
+            background-color: #f9fafb;
+        }
+        .btn-secondary:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen">
+    <div id="root"></div>
+    <!-- Application Script -->
+    <script type="text/babel" data-type="module" data-presets="typescript,react">
+        import React, { useState, useRef, useEffect, useCallback } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Upload, Play, Pause, Download, FileAudio, FileText, RefreshCw, ChevronRight, Clock, Video, Settings, Trash2, Zap, AlertCircle } from 'lucide-react';
+        // CDN Links
+        const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        const PDFJS_WORKER_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        // Updated to version 5.0.2 to support ArrayBufferTarget
+        const WEBM_MUXER_CDN = 'https://cdn.jsdelivr.net/npm/webm-muxer@5.0.2/build/webm-muxer.min.js';
+        // Types defined for TS babel preset
+        type Slide = {
+            id: number;
+            image: string; // Data URL
+            pageIndex: number;
+            startTime: number; // 秒
+        };
+        function App() {
+            // --- State ---
+            const [step, setStep] = useState(1); // 1: Upload, 2: Sync, 3: Export
+            const [pdfFile, setPdfFile] = useState(null);
+            const [audioFile, setAudioFile] = useState(null);
+            const [audioUrl, setAudioUrl] = useState(null);
+
+            const [slides, setSlides] = useState([]);
+            const [isLoadingPdf, setIsLoadingPdf] = useState(false);
+            const [isPdfReady, setIsPdfReady] = useState(false);
+            // Playback State
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [currentTime, setCurrentTime] = useState(0);
+            const [duration, setDuration] = useState(0);
+            const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
+            // Export State
+            const [isExporting, setIsExporting] = useState(false);
+            const [exportProgress, setExportProgress] = useState(0);
+            const [exportStatus, setExportStatus] = useState('');
+            // Refs
+            const audioRef = useRef(null);
+            const canvasRef = useRef(null);
+            // --- Load External Scripts ---
+            useEffect(() => {
+                const loadScript = (src, onLoad) => {
+                    if (document.querySelector(`script[src="${src}"]`)) {
+                        if (onLoad) onLoad();
+                        return;
+                    }
+                    const script = document.createElement('script');
+                    script.src = src;
+                    script.async = true;
+                    if (onLoad) script.onload = onLoad;
+                    document.body.appendChild(script);
+                    return script;
+                };
+                loadScript(PDFJS_CDN, () => {
+                    // @ts-ignore
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_CDN;
+                });
+
+                loadScript(WEBM_MUXER_CDN);
+            }, []);
+            // --- Handlers ---
+            const handlePdfUpload = async (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    setPdfFile(e.target.files[0]);
+                    setIsPdfReady(false);
+                    setSlides([]);
+                }
+            };
+            const handleAudioUpload = (e) => {
+                if (e.target.files && e.target.files[0]) {
+                    const file = e.target.files[0];
+                    setAudioFile(file);
+                    const url = URL.createObjectURL(file);
+                    setAudioUrl(url);
+                }
+            };
+            const processPdf = async () => {
+                if (!pdfFile) return;
+                // @ts-ignore
+                if (!window.pdfjsLib) {
+                    alert('PDFライブラリを読み込み中です。少々お待ちください。');
+                    return;
+                }
+                setIsLoadingPdf(true);
+                try {
+                    const arrayBuffer = await pdfFile.arrayBuffer();
+                    // @ts-ignore
+                    const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+                    const newSlides = [];
+
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const viewport = page.getViewport({ scale: 1.5 });
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        if (context) {
+                            await page.render({ canvasContext: context, viewport: viewport }).promise;
+                            newSlides.push({
+                                id: i,
+                                pageIndex: i,
+                                image: canvas.toDataURL('image/jpeg', 0.8),
+                                startTime: i === 1 ? 0 : Infinity,
+                            });
+                        }
+                    }
+                    setSlides(newSlides);
+                    setIsPdfReady(true);
+                } catch (error) {
+                    console.error(error);
+                    alert('PDFの読み込みに失敗しました。');
+                } finally {
+                    setIsLoadingPdf(false);
+                }
+            };
+            const handleTimeUpdate = () => {
+                if (audioRef.current) {
+                    const t = audioRef.current.currentTime;
+                    setCurrentTime(t);
+                    if (!isExporting) {
+                        updateCurrentSlide(t);
+                    }
+                }
+            };
+            const updateCurrentSlide = (time) => {
+                let activeIndex = 0;
+                for (let i = 0; i < slides.length; i++) {
+                    if (slides[i].startTime <= time) {
+                        activeIndex = i;
+                    } else {
+                        break;
+                    }
+                }
+                setCurrentSlideIndex(activeIndex);
+            };
+            const handleMetadataLoaded = () => {
+                if (audioRef.current) {
+                    setDuration(audioRef.current.duration);
+                }
+            };
+            const togglePlay = () => {
+                if (audioRef.current) {
+                    if (isPlaying) {
+                        audioRef.current.pause();
+                    } else {
+                        audioRef.current.play();
+                    }
+                    setIsPlaying(!isPlaying);
+                }
+            };
+            const recordCurrentTimeForSlide = () => {
+                if (currentSlideIndex < slides.length - 1) {
+                    const nextIndex = currentSlideIndex + 1;
+                    const newSlides = [...slides];
+                    newSlides[nextIndex].startTime = parseFloat(currentTime.toFixed(2));
+                    for (let i = nextIndex + 1; i < newSlides.length; i++) {
+                        if (Number.isFinite(newSlides[i].startTime) && newSlides[i].startTime < newSlides[i-1].startTime) {
+                            newSlides[i].startTime = newSlides[i-1].startTime + 1;
+                        }
+                    }
+                    setSlides(newSlides);
+                    setCurrentSlideIndex(nextIndex);
+                }
+            };
+            const handleManualTimeChange = (index, val) => {
+                const v = parseFloat(val);
+                const newSlides = [...slides];
+                if (!isNaN(v)) {
+                    newSlides[index].startTime = v;
+                } else {
+                    if (index !== 0) newSlides[index].startTime = Infinity;
+                }
+                setSlides(newSlides);
+            };
+            // --- Fast Export Logic using WebCodecs & WebM Muxer ---
+            const startExport = async () => {
+                // @ts-ignore
+                if (!window.WebMMuxer || !window.VideoEncoder || !window.AudioEncoder) {
+                    alert("お使いのブラウザは高速書き出しに対応していないか、ライブラリの読み込みに失敗しました。Chrome, Edge, Safariの最新版をご利用ください。");
+                    return;
+                }
+                if (!audioFile || slides.length === 0) return;
+                setIsExporting(true);
+                setExportProgress(0);
+                setExportStatus('初期化中...');
+
+                if (isPlaying) togglePlay();
+                let slideBitmaps = [];
+                try {
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const arrayBuffer = await audioFile.arrayBuffer();
+                    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+                    setExportStatus('スライド画像を解析中...');
+                    const firstImg = await loadImage(slides[0].image);
+                    let targetWidth = firstImg.width;
+                    let targetHeight = firstImg.height;
+                    if (targetWidth % 2 !== 0) targetWidth -= 1;
+                    if (targetHeight % 2 !== 0) targetHeight -= 1;
+                    // @ts-ignore
+                    const muxer = new window.WebMMuxer.Muxer({
+                        target: new window.WebMMuxer.ArrayBufferTarget(),
+                        video: {
+                            codec: 'V_VP9',
+                            width: targetWidth,
+                            height: targetHeight,
+                            frameRate: 30
+                        },
+                        audio: {
+                            codec: 'A_OPUS',
+                            numberOfChannels: audioBuffer.numberOfChannels,
+                            sampleRate: audioBuffer.sampleRate
+                        },
+                        firstTimestampBehavior: 'offset'
+                    });
+                    setExportStatus('画像を最適化中...');
+                    const tempCanvas = document.createElement('canvas');
+                    tempCanvas.width = targetWidth;
+                    tempCanvas.height = targetHeight;
+                    const tempCtx = tempCanvas.getContext('2d', { alpha: false });
+                    if (!tempCtx) throw new Error("Canvas context creation failed");
+                    const BATCH_SIZE = 5;
+                    for (let i = 0; i < slides.length; i += BATCH_SIZE) {
+                        const batch = slides.slice(i, i + BATCH_SIZE);
+                        const bitmaps = await Promise.all(batch.map(async (s) => {
+                            const img = await loadImage(s.image);
+                            tempCtx.drawImage(img, 0, 0, targetWidth, targetHeight);
+                            return await createImageBitmap(tempCanvas);
+                        }));
+                        slideBitmaps.push(...bitmaps);
+                    }
+                    const videoEncoder = new VideoEncoder({
+                        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+                        error: (e) => console.error(e)
+                    });
+                    videoEncoder.configure({
+                        codec: 'vp09.00.10.08',
+                        width: targetWidth,
+                        height: targetHeight,
+                        bitrate: 2500000,
+                        framerate: 30,
+                    });
+                    const audioEncoder = new AudioEncoder({
+                        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+                        error: (e) => console.error(e)
+                    });
+                    audioEncoder.configure({
+                        codec: 'opus',
+                        numberOfChannels: audioBuffer.numberOfChannels,
+                        sampleRate: audioBuffer.sampleRate,
+                        bitrate: 128000
+                    });
+                    setExportStatus('音声をエンコード中...');
+                    await encodeAudio(audioEncoder, audioBuffer);
+                    await audioEncoder.flush();
+                    setExportStatus('映像を超高速エンコード中...');
+                    const fps = 30;
+                    const totalDuration = audioBuffer.duration;
+                    const totalFrames = Math.ceil(totalDuration * fps);
+                    const frameDurationMicro = Math.round((1 / fps) * 1_000_000);
+
+                    let currentSlideIdx = 0;
+                    for (let i = 0; i < totalFrames; i++) {
+                        const time = i / fps;
+                        if (i % 30 === 0) {
+                            setExportProgress((time / totalDuration) * 100);
+                            await new Promise(r => setTimeout(r, 0));
+                        }
+                        while (
+                            currentSlideIdx < slides.length - 1 &&
+                            slides[currentSlideIdx + 1].startTime <= time
+                        ) {
+                            currentSlideIdx++;
+                        }
+                        const timestampMicro = Math.round(time * 1_000_000);
+                        // @ts-ignore
+                        const frame = new VideoFrame(slideBitmaps[currentSlideIdx], {
+                            timestamp: timestampMicro,
+                            duration: frameDurationMicro
+                        });
+                        videoEncoder.encode(frame, { keyFrame: i % 150 === 0 });
+                        frame.close();
+                        if (videoEncoder.encodeQueueSize > 15) {
+                            await videoEncoder.flush();
+                        }
+                    }
+                    setExportStatus('仕上げ処理中...');
+                    await videoEncoder.flush();
+                    setExportStatus('ファイルを生成中...');
+                    muxer.finalize();
+                    const { buffer } = muxer.target;
+                    const blob = new Blob([buffer], { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `super_fast_slide_${Date.now()}.webm`;
+                    a.click();
+                    setExportStatus('完了！');
+                    setIsExporting(false);
+
+                } catch (e) {
+                    console.error(e);
+                    alert('書き出し中にエラーが発生しました。コンソールを確認してください。');
+                    setIsExporting(false);
+                } finally {
+                    slideBitmaps.forEach(bmp => bmp.close());
+                }
+            };
+            const encodeAudio = async (encoder, buffer) => {
+                const numberOfChannels = buffer.numberOfChannels;
+                const length = buffer.length;
+                const interleaved = new Float32Array(length * numberOfChannels);
+                for (let ch = 0; ch < numberOfChannels; ch++) {
+                    const data = buffer.getChannelData(ch);
+                    for (let i = 0; i < length; i++) {
+                        interleaved[i * numberOfChannels + ch] = data[i];
+                    }
+                }
+                const chunkSize = buffer.sampleRate;
+                const totalSamples = length;
+                for (let i = 0; i < totalSamples; i += chunkSize) {
+                    const end = Math.min(i + chunkSize, totalSamples);
+                    const count = end - i;
+                    const chunkData = interleaved.subarray(i * numberOfChannels, end * numberOfChannels);
+                    const timestampMicro = Math.round((i / buffer.sampleRate) * 1_000_000);
+                    // @ts-ignore
+                    const audioData = new AudioData({
+                        format: 'f32',
+                        sampleRate: buffer.sampleRate,
+                        numberOfChannels: numberOfChannels,
+                        numberOfFrames: count,
+                        timestamp: timestampMicro,
+                        data: chunkData
+                    });
+                    encoder.encode(audioData);
+                    audioData.close();
+                    if (encoder.encodeQueueSize > 5) {
+                        await encoder.flush();
+                    }
+                }
+            };
+            const loadImage = (src) => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                    img.src = src;
+                });
+            };
+            return (
+                <div className="min-h-screen bg-gray-50 text-gray-800 font-sans">
+                    <header className="bg-white border-b px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
+                        <div className="flex items-center space-x-2">
+                            <div className="bg-indigo-600 p-2 rounded-lg text-white">
+                                <Video size={20} />
+                            </div>
+                            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600">
+                                Slide Movie Maker <span className="text-xs text-white bg-red-500 font-bold ml-2 rounded px-2 py-0.5 shadow-sm">Super Fast</span>
+                            </h1>
+                        </div>
+                        <div className="flex space-x-2 text-sm">
+                            <StepIndicator step={1} current={step} label="ファイル" />
+                            <StepIndicator step={2} current={step} label="編集・同期" />
+                            <StepIndicator step={3} current={step} label="書き出し" />
+                        </div>
+                    </header>
+                    <main className="max-w-5xl mx-auto p-6">
+                        {step === 1 && (
+                            <div className="space-y-8 animate-fade-in">
+                                <div className="text-center space-y-2 mb-8">
+                                    <h2 className="text-2xl font-bold">素材をアップロード</h2>
+                                    <p className="text-gray-500">PDF形式のスライドと、音声ファイル(mp3, m4a等)を選択してください。</p>
+                                </div>
+                                <div className="grid md:grid-cols-2 gap-6">
+                                    <div className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${pdfFile ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300 hover:border-gray-400'}`}>
+                                        <div className="flex flex-col items-center space-y-4">
+                                            <div className={`p-4 rounded-full ${pdfFile ? 'bg-indigo-100 text-indigo-600' : 'bg-gray-100 text-gray-400'}`}>
+                                                <FileText size={40} />
+                                            </div>
+                                            <div>
+                                                <h3 className="font-semibold text-lg">スライド (PDF)</h3>
+                                                <p className="text-sm text-gray-500 mt-1">{pdfFile ? pdfFile.name : 'クリックして選択'}</p>
+                                            </div>
+                                            <input type="file" accept=".pdf" onChange={handlePdfUpload} className="hidden" id="pdf-upload" />
+                                            <label htmlFor="pdf-upload" className="btn-secondary cursor-pointer block px-4 py-2">
+                                                ファイルを選択
+                                            </label>
+                                        </div>
+                                    </div>
+                                    <div className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${audioFile ? 'border-pink-500 bg-pink-50' : 'border-gray-300 hover:border-gray-400'}`}>
+                                        <div className="flex flex-col items-center space-y-4">
+                                            <div className={`p-4 rounded-full ${audioFile ? 'bg-pink-100 text-pink-600' : 'bg-gray-100 text-gray-400'}`}>
+                                                <FileAudio size={40} />
+                                            </div>
+                                            <div>
+                                                <h3 className="font-semibold text-lg">音声 (Audio)</h3>
+                                                <p className="text-sm text-gray-500 mt-1">{audioFile ? audioFile.name : 'クリックして選択'}</p>
+                                            </div>
+                                            <input type="file" accept="audio/*" onChange={handleAudioUpload} className="hidden" id="audio-upload" />
+                                            <label htmlFor="audio-upload" className="btn-secondary cursor-pointer block px-4 py-2">
+                                                ファイルを選択
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="flex justify-center mt-8">
+                                    <button
+                                        onClick={() => {
+                                            processPdf();
+                                            if (audioFile) setStep(2);
+                                        }}
+                                        disabled={!pdfFile || !audioFile || isLoadingPdf}
+                                        className={`btn-primary flex items-center space-x-2 text-lg px-8 py-3 ${(!pdfFile || !audioFile) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    >
+                                        {isLoadingPdf ? (
+                                            <>
+                                                <RefreshCw className="animate-spin" />
+                                                <span>PDF変換中...</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span>次へ進む</span>
+                                                <ChevronRight size={20} />
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {step === 2 && (
+                            <div className="grid lg:grid-cols-3 gap-6 animate-fade-in h-[calc(100vh-140px)]">
+                                <div className="lg:col-span-2 flex flex-col space-y-4 h-full">
+                                    <div className="bg-black rounded-xl overflow-hidden shadow-lg aspect-video flex items-center justify-center relative bg-grid-pattern">
+                                        {slides.length > 0 ? (
+                                            <img
+                                                src={slides[currentSlideIndex].image}
+                                                alt={`Slide ${currentSlideIndex + 1}`}
+                                                className="max-h-full max-w-full object-contain"
+                                            />
+                                        ) : (
+                                            <div className="text-white">PDFを読み込んでいます...</div>
+                                        )}
+                                        <div className="absolute top-4 left-4 bg-black/60 text-white px-3 py-1 rounded-full text-sm backdrop-blur-sm">
+                                            Slide {currentSlideIndex + 1} / {slides.length}
+                                        </div>
+                                    </div>
+                                    <div className="bg-white rounded-xl p-4 shadow-sm border space-y-4">
+                                        <div>
+                                            <input
+                                                type="range"
+                                                min="0"
+                                                max={duration || 100}
+                                                value={currentTime}
+                                                onChange={(e) => {
+                                                    if (audioRef.current) audioRef.current.currentTime = parseFloat(e.target.value);
+                                                }}
+                                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                                            />
+                                            <div className="flex justify-between text-xs text-gray-500 mt-1 font-mono">
+                                                <span>{formatTime(currentTime)}</span>
+                                                <span>{formatTime(duration)}</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center space-x-4">
+                                                <button
+                                                    onClick={togglePlay}
+                                                    className="p-3 rounded-full bg-indigo-600 text-white hover:bg-indigo-700 transition-colors shadow-md"
+                                                >
+                                                    {isPlaying ? <Pause fill="currentColor" /> : <Play fill="currentColor" className="ml-1" />}
+                                                </button>
+                                                <div className="text-sm">
+                                                    <p className="font-bold text-gray-700">再生して同期を調整</p>
+                                                    <p className="text-gray-500 text-xs">「次のスライドへ」ボタンでタイミングを記録できます</p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={recordCurrentTimeForSlide}
+                                                disabled={currentSlideIndex >= slides.length - 1}
+                                                className={`flex items-center space-x-2 px-6 py-3 rounded-lg font-bold transition-all transform active:scale-95 ${
+                                                    currentSlideIndex >= slides.length - 1
+                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                                    : 'bg-red-500 text-white hover:bg-red-600 shadow-md ring-4 ring-red-100'
+                                                }`}
+                                            >
+                                                <Clock size={20} />
+                                                <span>次のスライドへ記録</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-white rounded-xl shadow-sm border overflow-hidden flex flex-col h-full">
+                                    <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+                                        <h3 className="font-bold flex items-center space-x-2">
+                                            <Settings size={18} />
+                                            <span>スライド設定</span>
+                                        </h3>
+                                        <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded">
+                                            全{slides.length}枚
+                                        </span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
+                                        {slides.map((slide, idx) => (
+                                            <div
+                                                key={slide.id}
+                                                onClick={() => {
+                                                    if (audioRef.current && Number.isFinite(slide.startTime)) {
+                                                        audioRef.current.currentTime = slide.startTime;
+                                                    }
+                                                }}
+                                                className={`flex items-center p-2 rounded-lg border cursor-pointer transition-colors hover:bg-gray-50 ${currentSlideIndex === idx ? 'ring-2 ring-indigo-500 bg-indigo-50 border-transparent' : 'border-gray-200'}`}
+                                            >
+                                                <div className="w-20 h-14 bg-gray-200 rounded overflow-hidden flex-shrink-0 relative">
+                                                    <img src={slide.image} className="w-full h-full object-cover" alt="" />
+                                                    <div className="absolute bottom-0 left-0 bg-black/50 text-white text-[10px] px-1">{idx + 1}</div>
+                                                </div>
+                                                <div className="ml-3 flex-1">
+                                                    <div className="text-xs text-gray-500 mb-1">開始時間 (秒)</div>
+                                                    <input
+                                                        type="number"
+                                                        step="0.1"
+                                                        value={Number.isFinite(slide.startTime) ? slide.startTime : ''}
+                                                        placeholder="未設定"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        onChange={(e) => handleManualTimeChange(idx, e.target.value)}
+                                                        className="w-full p-1 border rounded text-sm bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-500 outline-none"
+                                                    />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="p-4 border-t bg-gray-50">
+                                        <button
+                                            onClick={() => setStep(3)}
+                                            className="btn-primary w-full py-3 block text-center"
+                                        >
+                                            書き出し画面へ
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {step === 3 && (
+                            <div className="max-w-2xl mx-auto space-y-8 animate-fade-in text-center pt-10">
+                                <div className="bg-white p-10 rounded-2xl shadow-lg border">
+                                    <div className={`w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 ${isExporting ? 'bg-amber-100 text-amber-600' : 'bg-indigo-100 text-indigo-600'}`}>
+                                        {isExporting ? <RefreshCw size={48} className="animate-spin" /> : <Zap size={48} />}
+                                    </div>
+                                    <h2 className="text-2xl font-bold mb-2">超高速書き出し (WebCodecs)</h2>
+                                    <p className="text-gray-500 mb-8">
+                                        Canvas描画をスキップし、画像を事前最適化することで<br/>これ以上ない速度で動画をレンダリングします。<br/>
+                                        <span className="text-xs text-gray-400 mt-2 block">推奨ブラウザ: Chrome, Edge, Safari (最新版)</span>
+                                    </p>
+                                    {isExporting ? (
+                                        <div className="space-y-4">
+                                            <div className="w-full bg-gray-200 rounded-full h-4 overflow-hidden">
+                                                <div
+                                                    className="bg-amber-500 h-full transition-all duration-100 ease-linear"
+                                                    style={{ width: `${exportProgress}%` }}
+                                                />
+                                            </div>
+                                            <p className="text-amber-600 font-mono font-bold">{Math.round(exportProgress)}%</p>
+                                            <p className="text-sm text-gray-500 font-bold animate-pulse">{exportStatus}</p>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-6">
+                                            <div className="flex flex-col space-y-4 sm:flex-row sm:space-y-0 sm:space-x-4 justify-center">
+                                                <button
+                                                    onClick={() => setStep(2)}
+                                                    className="btn-secondary px-8 py-3"
+                                                >
+                                                    編集に戻る
+                                                </button>
+                                                <button
+                                                    onClick={startExport}
+                                                    className="btn-primary px-8 flex items-center justify-center space-x-2 py-3"
+                                                >
+                                                    <Zap size={20} className="text-yellow-300 fill-current" />
+                                                    <span>高速作成開始</span>
+                                                </button>
+                                            </div>
+                                            {exportStatus === '完了！' && (
+                                                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-left flex items-start space-x-3 text-sm">
+                                                    <AlertCircle className="text-blue-500 flex-shrink-0 mt-0.5" size={20} />
+                                                    <div>
+                                                        <p className="font-bold text-blue-800 mb-1">再生できない場合</p>
+                                                        <p className="text-blue-700 leading-relaxed">
+                                                            Windows標準のプレイヤー等では再生できないことがあります。<br/>
+                                                            その場合は、作成されたファイルを<span className="font-bold underline">Google Chromeブラウザの中にドラッグ＆ドロップ</span>して再生してください。
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </main>
+                    <audio
+                        ref={audioRef}
+                        src={audioUrl || ''}
+                        onTimeUpdate={handleTimeUpdate}
+                        onLoadedMetadata={handleMetadataLoaded}
+                        onEnded={() => setIsPlaying(false)}
+                        className="hidden"
+                    />
+                    <canvas
+                        ref={canvasRef}
+                        className="hidden"
+                    />
+                </div>
+            );
+        }
+        function StepIndicator({ step, current, label }) {
+            const isActive = current >= step;
+            const isCurrent = current === step;
+            return (
+                <div className={`flex items-center space-x-2 ${isActive ? 'text-indigo-600' : 'text-gray-400'}`}>
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border ${isActive ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-transparent border-current'}`}>
+                        {step}
+                    </div>
+                    <span className={`hidden sm:inline ${isCurrent ? 'font-bold' : ''}`}>{label}</span>
+                </div>
+            );
+        }
+        function formatTime(seconds) {
+            if (!Number.isFinite(seconds)) return "--:--";
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            const ms = Math.floor((seconds % 1) * 10);
+            return `${m}:${s.toString().padStart(2, '0')}.${ms}`;
+        }
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
